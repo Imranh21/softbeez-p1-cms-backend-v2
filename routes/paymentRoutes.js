@@ -6,7 +6,7 @@ const authMiddleware = require("../middleware/authMiddleware");
 router.post("/", authMiddleware(["admin"]), paymentController.createPayment);
 router.get("/", authMiddleware(["admin"]), paymentController.getAllPayments);
 router.get(
-  "/:businessId",
+  "/business/:businessId",
   authMiddleware(["admin"]),
   paymentController.getPaymentsByBusiness
 );
@@ -36,6 +36,12 @@ router.get(
   "/:id/pdf",
   authMiddleware(["admin"]),
   paymentController.getPaymentPDF
+);
+
+router.get(
+  "/business/:businessId/customer",
+  authMiddleware(["admin"]),
+  paymentController.getCustomerPayments
 );
 
 module.exports = router;

@@ -12,12 +12,9 @@ exports.createBusiness = async (req, res) => {
 
 exports.getAllBusinesses = async (req, res) => {
   try {
-    const businesses = await Business.find(); // 5 seconds timeout
-    if (businesses.length > 0) {
-      res.json(businesses);
-    } else {
-      res.status(404).json({ message: "No businesses found" });
-    }
+    const businesses = await Business.find();
+
+    res.json(businesses);
   } catch (error) {
     if (error.name === "MongoTimeoutError") {
       res.status(504).json({ message: "Database operation timed out" });

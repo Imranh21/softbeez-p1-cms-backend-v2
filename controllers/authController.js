@@ -1,4 +1,5 @@
 const User = require("../models/User");
+const Customer = require("../models/Customer");
 const jwt = require("jsonwebtoken");
 
 exports.register = async (req, res) => {

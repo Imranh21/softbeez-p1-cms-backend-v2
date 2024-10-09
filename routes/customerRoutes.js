@@ -31,9 +31,31 @@ router.delete(
   customerController.deleteCustomer
 );
 router.get(
-  "/my-details",
-  authMiddleware(["customer"]),
+  "/customer/:customerId",
+  authMiddleware(["customer", "admin"]),
   customerController.getCustomerDetails
+);
+router.get(
+  "/search",
+  authMiddleware(["admin"]),
+  customerController.searchCustomers
+);
+router.get("/me/:businessId", customerController.getCustomerPaymentInfo);
+router.post(
+  "/delete-multiple",
+  authMiddleware(["admin"]),
+  customerController.deleteMultipleCustomers
+);
+router.get(
+  "/search/customer",
+  authMiddleware(["admin"]),
+  customerController.searchCustomerBeforeAdding
+);
+
+router.get(
+  "/search/customers",
+  authMiddleware(["admin"]),
+  customerController.searchCustomers
 );
 
 module.exports = router;
