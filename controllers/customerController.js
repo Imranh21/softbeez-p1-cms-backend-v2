@@ -380,8 +380,7 @@ exports.deleteCustomer = async (req, res) => {
   session.startTransaction();
 
   try {
-    const { id } = req.params;
-    const { businessId } = req.body;
+    const { id, businessId } = req.params;
 
     if (
       !mongoose.Types.ObjectId.isValid(id) ||
@@ -662,7 +661,7 @@ exports.getCustomerPaymentInfo = async (req, res) => {
 
     if (businessIndex === -1) {
       return res
-        .status(404)
+        .status(200)
         .json({ message: "Customer is not associated with this business" });
     }
 

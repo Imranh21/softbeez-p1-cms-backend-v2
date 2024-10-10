@@ -26,7 +26,7 @@ router.put(
   customerController.updateCustomer
 );
 router.delete(
-  "/:id",
+  "/:businessId/:id",
   authMiddleware(["admin"]),
   customerController.deleteCustomer
 );
