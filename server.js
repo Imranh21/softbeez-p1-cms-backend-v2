@@ -17,8 +17,9 @@ connectDB();
 // Middleware
 app.use(
   cors({
-    origin: "https://softbeez-p1-cms-frontend-v2.vercel.app/",
-    methods: "GET,POST,PUT,DELETE",
+    origin: "https://softbeez-p1-cms-frontend-v2.vercel.app",
+    methods: ["GET", "POST", "PUT", "DELETE"],
+    credentials: true,
   })
 );
 app.use(express.json());
