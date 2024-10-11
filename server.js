@@ -12,7 +12,6 @@ const { spinServer } = require("./controllers/spinServer");
 
 const app = express();
 
-// Connect to MongoDB
 connectDB();
 
 // Middleware
@@ -34,4 +33,6 @@ app.use("/api/dashboard/business-overview", businessOverviewRoutes);
 
 const PORT = process.env.PORT || 5000;
 
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
