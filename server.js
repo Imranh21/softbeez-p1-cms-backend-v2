@@ -17,7 +17,7 @@ connectDB();
 // Middleware
 app.use(
   cors({
-    origin: "*",
+    origin: "https://softbeez-p1-cms-backend-v2.onrender.com",
     methods: "GET,POST,PUT,DELETE",
   })
 );
