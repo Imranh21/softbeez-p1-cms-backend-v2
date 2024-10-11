@@ -4,6 +4,7 @@ const Business = require("../models/Business");
 const mongoose = require("mongoose");
 const PDFDocument = require("pdfkit");
 
+// previous createPayment
 // exports.createPayment = async (req, res) => {
 //   try {
 //     const { uuid, businessId, paidAmount, dueDate } = req.body;
@@ -69,23 +70,102 @@ const PDFDocument = require("pdfkit");
 //   }
 // };
 
+// previous code of settlePayment
+// async function settlePayments(customerId, businessId, paidAmount) {
+//   const customer = await Customer.findById(customerId);
+//   const business = await Business.findById(businessId);
+
+//   if (!customer || !business) {
+//     throw new Error("Customer or Business not found");
+//   }
+
+//   const businessIndex = customer.businesses.findIndex(
+//     (b) => b.businessId.toString() === businessId.toString()
+//   );
+
+//   if (businessIndex === -1) {
+//     throw new Error("Business not found in customer data");
+//   }
+
+//   const customerBusiness = customer.businesses[businessIndex];
+//   let remainingPaidAmount = paidAmount;
+
+//   if (customerBusiness.totalDueAmount > 0) {
+//     const settledAmount = Math.min(
+//       remainingPaidAmount,
+//       customerBusiness.totalDueAmount
+//     );
+//     customerBusiness.totalDueAmount -= settledAmount;
+//     remainingPaidAmount -= settledAmount;
+//   }
+
+//   if (remainingPaidAmount > 0) {
+//     customerBusiness.totalDueAmount = Math.max(
+//       customerBusiness.monthlyFee - remainingPaidAmount,
+//       0
+//     );
+//   } else {
+//     customerBusiness.totalDueAmount += customerBusiness.monthlyFee;
+//   }
+
+//   // Ensure numerical addition
+//   customerBusiness.totalPaymentAmount =
+//     Number(customerBusiness.totalPaymentAmount) + Number(paidAmount);
+//   customerBusiness.paymentHistory.push({
+//     amount: paidAmount,
+//     date: new Date(),
+//     month: new Date().getMonth() + 1,
+//     year: new Date().getFullYear(),
+//   });
+
+//   // Ensure numerical addition for mainTotalPayment
+//   customer.mainTotalPayment =
+//     Number(customer.mainTotalPayment) + Number(paidAmount);
+//   await customer.save();
+
+//   // Update business statistics
+//   // Ensure numerical addition for totalIncome
+//   business.totalIncome = Number(business.totalIncome) + Number(paidAmount);
+//   business.totalDue = customerBusiness.totalDueAmount;
+//   await business.save();
+
+//   await Payment.updateMany(
+//     {
+//       customerId,
+//       businessId,
+//       status: { $ne: "settled" },
+//     },
+//     {
+//       $set: {
+//         status:
+//           customerBusiness.totalDueAmount === 0
+//             ? "settled"
+//             : "partially_settled",
+//         remainingAmount: customerBusiness.totalDueAmount,
+//       },
+//     }
+//   );
+// }
+
+// new code of settlePayment
+
+// new CreatePayment
 exports.createPayment = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
     const { uuid, businessId, paidAmount, dueDate } = req.body;
 
-    const customer = await Customer.findOne({ uuid });
+    const customer = await Customer.findOne({ uuid }).session(session);
     if (!customer) {
+      await session.abortTransaction();
       return res.status(404).json({ message: "Customer not found" });
     }
 
-    if (!customer.businesses || !Array.isArray(customer.businesses)) {
-      return res.status(400).json({
-        message: "Customer data is invalid. Businesses array is missing.",
-      });
-    }
-
-    const business = await Business.findById(businessId);
+    const business = await Business.findById(businessId).session(session);
     if (!business) {
+      await session.abortTransaction();
       return res.status(404).json({ message: "Business not found" });
     }
 
@@ -93,6 +173,7 @@ exports.createPayment = async (req, res) => {
       (b) => b.businessId.toString() === businessId
     );
     if (businessIndex === -1) {
+      await session.abortTransaction();
       return res
         .status(400)
         .json({ message: "Customer is not associated with this business" });
@@ -101,42 +182,193 @@ exports.createPayment = async (req, res) => {
     const customerBusiness = customer.businesses[businessIndex];
     const monthlyFee = customerBusiness.monthlyFee;
     const previousDue = customerBusiness.totalDueAmount;
-    let remainingAmount = previousDue + monthlyFee - paidAmount;
+    const totalDueForThisPayment = previousDue + monthlyFee;
 
-    // Parse the dueDate string into a Date object
     const parsedDueDate = new Date(dueDate);
     if (isNaN(parsedDueDate.getTime())) {
+      await session.abortTransaction();
       return res
         .status(400)
         .json({ message: "Invalid date format. Please use YYYY-MM-DD." });
     }
 
+    const { settledPreviousDue, settledCurrentFee, updatedPreviousPayment } =
+      await settlePayments(
+        customer._id,
+        businessId,
+        Number(paidAmount),
+        parsedDueDate,
+        session
+      );
+
+    const newRemainingAmount = Math.max(
+      totalDueForThisPayment - Number(paidAmount),
+      0
+    );
+
     const payment = new Payment({
       customerId: customer._id,
       businessId,
-      dueAmount: previousDue + monthlyFee,
-      paidAmount,
-      remainingAmount: Math.max(remainingAmount, 0),
+      dueAmount: totalDueForThisPayment,
+      paidAmount: Number(paidAmount),
+      remainingAmount: newRemainingAmount,
       dueDate: parsedDueDate,
-      status: remainingAmount <= 0 ? "settled" : "partially_settled",
+      status: newRemainingAmount === 0 ? "settled" : "partially_settled",
+      settledPreviousDue,
+      settledCurrentFee,
     });
 
-    await payment.save();
-    await settlePayments(customer._id, businessId, paidAmount);
+    await payment.save({ session });
 
-    res.status(201).json(payment);
+    // Update customer's business info
+    customerBusiness.totalPaymentAmount += Number(paidAmount);
+    customerBusiness.totalDueAmount = newRemainingAmount;
+    customerBusiness.paymentHistory.push({
+      amount: paidAmount,
+      date: new Date(),
+      month: parsedDueDate.getMonth() + 1,
+      year: parsedDueDate.getFullYear(),
+    });
+
+    // Update customer's main total payment
+    customer.mainTotalPayment += Number(paidAmount);
+    await customer.save({ session });
+
+    // Update business statistics
+    business.totalIncome += Number(paidAmount);
+    business.totalDue = newRemainingAmount;
+    await business.save({ session });
+
+    await session.commitTransaction();
+    res.status(201).json({ newPayment: payment, updatedPreviousPayment });
   } catch (error) {
+    await session.abortTransaction();
     console.error("Error in createPayment:", error);
     res.status(500).json({
       message: "An error occurred while processing the payment",
       error: error.message,
     });
+  } finally {
+    session.endSession();
   }
 };
 
-async function settlePayments(customerId, businessId, paidAmount) {
-  const customer = await Customer.findById(customerId);
-  const business = await Business.findById(businessId);
+// previous settlePayment
+// async function settlePayments(customerId, businessId, paidAmount) {
+//   const customer = await Customer.findById(customerId);
+//   const business = await Business.findById(businessId);
+
+//   if (!customer || !business) {
+//     throw new Error("Customer or Business not found");
+//   }
+
+//   const businessIndex = customer.businesses.findIndex(
+//     (b) => b.businessId.toString() === businessId.toString()
+//   );
+
+//   if (businessIndex === -1) {
+//     throw new Error("Business not found in customer data");
+//   }
+
+//   const customerBusiness = customer.businesses[businessIndex];
+//   let remainingPaidAmount = paidAmount;
+//   let settledPreviousDue = 0;
+//   let settledCurrentFee = 0;
+
+//   // First, settle any previous due amount
+//   if (customerBusiness.totalDueAmount > 0) {
+//     settledPreviousDue = Math.min(
+//       remainingPaidAmount,
+//       customerBusiness.totalDueAmount
+//     );
+//     customerBusiness.totalDueAmount -= settledPreviousDue;
+//     remainingPaidAmount -= settledPreviousDue;
+
+//     // Update the status of previous month's payment to "settled"
+//     await Payment.updateMany(
+//       {
+//         customerId,
+//         businessId,
+//         status: { $ne: "settled" },
+//         dueDate: { $lt: new Date() },
+//       },
+//       {
+//         $set: {
+//           status: "settled",
+//           remainingAmount: 0,
+//         },
+//       }
+//     );
+//   }
+
+//   // Then, apply the remaining amount to the current month's fee
+//   if (remainingPaidAmount > 0) {
+//     settledCurrentFee = Math.min(
+//       remainingPaidAmount,
+//       customerBusiness.monthlyFee
+//     );
+//     const currentMonthDue = Math.max(
+//       customerBusiness.monthlyFee - settledCurrentFee,
+//       0
+//     );
+//     customerBusiness.totalDueAmount += currentMonthDue;
+//   } else {
+//     // If no remaining amount, add the full monthly fee to the total due
+//     customerBusiness.totalDueAmount += customerBusiness.monthlyFee;
+//   }
+
+//   // Ensure numerical addition
+//   customerBusiness.totalPaymentAmount =
+//     Number(customerBusiness.totalPaymentAmount) + Number(paidAmount);
+//   customerBusiness.paymentHistory.push({
+//     amount: paidAmount,
+//     date: new Date(),
+//     month: new Date().getMonth() + 1,
+//     year: new Date().getFullYear(),
+//   });
+
+//   // Ensure numerical addition for mainTotalPayment
+//   customer.mainTotalPayment =
+//     Number(customer.mainTotalPayment) + Number(paidAmount);
+//   await customer.save();
+
+//   // Update business statistics
+//   // Ensure numerical addition for totalIncome
+//   business.totalIncome = Number(business.totalIncome) + Number(paidAmount);
+//   business.totalDue = customerBusiness.totalDueAmount;
+//   await business.save();
+
+//   // Update the current month's payment status
+//   const currentMonthStatus =
+//     customerBusiness.totalDueAmount === 0 ? "settled" : "partially_settled";
+//   await Payment.updateMany(
+//     {
+//       customerId,
+//       businessId,
+//       status: { $ne: "settled" },
+//       dueDate: { $gte: new Date() },
+//     },
+//     {
+//       $set: {
+//         status: currentMonthStatus,
+//         remainingAmount: customerBusiness.totalDueAmount,
+//       },
+//     }
+//   );
+
+//   return { settledPreviousDue, settledCurrentFee };
+// }
+
+// new settlePayment
+async function settlePayments(
+  customerId,
+  businessId,
+  paidAmount,
+  dueDate,
+  session
+) {
+  const customer = await Customer.findById(customerId).session(session);
+  const business = await Business.findById(businessId).session(session);
 
   if (!customer || !business) {
     throw new Error("Customer or Business not found");
@@ -152,128 +384,64 @@ async function settlePayments(customerId, businessId, paidAmount) {
 
   const customerBusiness = customer.businesses[businessIndex];
   let remainingPaidAmount = paidAmount;
+  let settledPreviousDue = 0;
+  let settledCurrentFee = 0;
+  let updatedPreviousPayment = null;
 
+  // First, settle any previous due amount
   if (customerBusiness.totalDueAmount > 0) {
-    const settledAmount = Math.min(
+    settledPreviousDue = Math.min(
       remainingPaidAmount,
       customerBusiness.totalDueAmount
     );
-    customerBusiness.totalDueAmount -= settledAmount;
-    remainingPaidAmount -= settledAmount;
-  }
+    customerBusiness.totalDueAmount -= settledPreviousDue;
+    remainingPaidAmount -= settledPreviousDue;
 
-  if (remainingPaidAmount > 0) {
-    customerBusiness.totalDueAmount = Math.max(
-      customerBusiness.monthlyFee - remainingPaidAmount,
-      0
-    );
-  } else {
-    customerBusiness.totalDueAmount += customerBusiness.monthlyFee;
-  }
-
-  // Ensure numerical addition
-  customerBusiness.totalPaymentAmount =
-    Number(customerBusiness.totalPaymentAmount) + Number(paidAmount);
-  customerBusiness.paymentHistory.push({
-    amount: paidAmount,
-    date: new Date(),
-    month: new Date().getMonth() + 1,
-    year: new Date().getFullYear(),
-  });
-
-  // Ensure numerical addition for mainTotalPayment
-  customer.mainTotalPayment =
-    Number(customer.mainTotalPayment) + Number(paidAmount);
-  await customer.save();
-
-  // Update business statistics
-  // Ensure numerical addition for totalIncome
-  business.totalIncome = Number(business.totalIncome) + Number(paidAmount);
-  business.totalDue = customerBusiness.totalDueAmount;
-  await business.save();
-
-  // Update all related unsettled payments
-  await Payment.updateMany(
-    {
+    // Update the status of previous month's payment
+    const previousPayment = await Payment.findOne({
       customerId,
       businessId,
       status: { $ne: "settled" },
-    },
-    {
-      $set: {
-        status:
-          customerBusiness.totalDueAmount === 0
-            ? "settled"
-            : "partially_settled",
-        remainingAmount: customerBusiness.totalDueAmount,
-      },
+      dueDate: { $lt: dueDate },
+    })
+      .sort({ dueDate: -1 })
+      .session(session);
+
+    if (previousPayment) {
+      previousPayment.remainingAmount = Math.max(
+        previousPayment.remainingAmount - settledPreviousDue,
+        0
+      );
+      previousPayment.status =
+        previousPayment.remainingAmount === 0 ? "settled" : "partially_settled";
+      await previousPayment.save({ session });
+      updatedPreviousPayment = previousPayment;
     }
-  );
+  }
+
+  // Then, apply the remaining amount to the current month's fee
+  if (remainingPaidAmount > 0) {
+    settledCurrentFee = Math.min(
+      remainingPaidAmount,
+      customerBusiness.monthlyFee
+    );
+    const currentMonthDue = Math.max(
+      customerBusiness.monthlyFee - settledCurrentFee,
+      0
+    );
+    customerBusiness.totalDueAmount += currentMonthDue;
+  } else {
+    // If no remaining amount, add the full monthly fee to the total due
+    customerBusiness.totalDueAmount += customerBusiness.monthlyFee;
+  }
+
+  return { settledPreviousDue, settledCurrentFee, updatedPreviousPayment };
 }
-
-// exports.getPaymentsByBusiness = async (req, res) => {
-//   try {
-//     const { businessId } = req.params;
-//     const { status, month, year, page = 1, limit = 10 } = req.query;
-
-//     if (!mongoose.Types.ObjectId.isValid(businessId)) {
-//       return res.status(400).json({ message: "Invalid business ID" });
-//     }
-
-//     let query = { businessId: new mongoose.Types.ObjectId(businessId) };
-
-//     if (status && status !== "all") {
-//       if (status === "settled") {
-//         query.status = "settled";
-//       } else if (status === "partially_settled") {
-//         query.status = "partially_settled";
-//       }
-//     }
-
-//     if (month && month !== "all" && year) {
-//       const startDate = new Date(year, parseInt(month) - 1, 1);
-//       const endDate = new Date(year, parseInt(month), 0);
-//       query.dueDate = { $gte: startDate, $lte: endDate };
-//     } else if (year && month === "all") {
-//       const startDate = new Date(year, 0, 1);
-//       const endDate = new Date(year, 11, 31);
-//       query.dueDate = { $gte: startDate, $lte: endDate };
-//     }
-
-//     const pageNum = parseInt(page);
-//     const limitNum = parseInt(limit);
-
-//     const skip = (pageNum - 1) * limitNum;
-
-//     const totalCount = await Payment.countDocuments(query);
-
-//     const payments = await Payment.find(query)
-//       .sort({ dueDate: 1 })
-//       .skip(skip)
-//       .limit(limitNum)
-//       .populate("customerId", "name uuid phone");
-
-//     const totalPages = Math.ceil(totalCount / limitNum);
-
-//     res.json({
-//       payments,
-//       currentPage: pageNum,
-//       totalPages,
-//       totalCount,
-//     });
-//   } catch (error) {
-//     console.error("Error in getPaymentsByBusiness:", error);
-//     res.status(500).json({
-//       message: "An error occurred while fetching payments",
-//       error: error.message,
-//     });
-//   }
-// };
 
 exports.getPaymentsByBusiness = async (req, res) => {
   try {
     const { businessId } = req.params;
-    const { status, month, year, page = 1, limit = 10 } = req.query;
+    const { status, month, year = "all", page = 1, limit = 10 } = req.query;
 
     if (!mongoose.Types.ObjectId.isValid(businessId)) {
       return res.status(400).json({ message: "Invalid business ID" });
@@ -289,11 +457,19 @@ exports.getPaymentsByBusiness = async (req, res) => {
       }
     }
 
-    if (month && month !== "all" && year) {
-      const startDate = new Date(year, parseInt(month) - 1, 1);
-      const endDate = new Date(year, parseInt(month), 0);
-      query.dueDate = { $gte: startDate, $lte: endDate };
-    } else if (year && month === "all") {
+    if (month && month !== "all") {
+      if (year === "all") {
+        // If month is specified but year is 'all', use the current year
+        const currentYear = new Date().getFullYear();
+        const startDate = new Date(currentYear, parseInt(month) - 1, 1);
+        const endDate = new Date(currentYear, parseInt(month), 0);
+        query.dueDate = { $gte: startDate, $lte: endDate };
+      } else {
+        const startDate = new Date(year, parseInt(month) - 1, 1);
+        const endDate = new Date(year, parseInt(month), 0);
+        query.dueDate = { $gte: startDate, $lte: endDate };
+      }
+    } else if (year !== "all") {
       const startDate = new Date(year, 0, 1);
       const endDate = new Date(year, 11, 31);
       query.dueDate = { $gte: startDate, $lte: endDate };
@@ -358,8 +534,11 @@ exports.getCustomerPayments = async (req, res) => {
 
     if (businessIndex === -1) {
       return res
-        .status(404)
-        .json({ message: "Customer is not associated with this business" });
+        .status(200)
+        .json({
+          message: "Customer is not associated with this business",
+          payments: [],
+        });
     }
 
     const query = {
@@ -474,72 +653,6 @@ exports.getPayment = async (req, res) => {
   }
 };
 
-// exports.updatePayment = async (req, res) => {
-//   const session = await mongoose.startSession();
-//   session.startTransaction();
-
-//   try {
-//     const { id } = req.params;
-//     const { paidAmount } = req.body;
-
-//     console.log("paid amount", paidAmount);
-
-//     if (!mongoose.Types.ObjectId.isValid(id)) {
-//       await session.abortTransaction();
-//       return res.status(400).json({ message: "Invalid payment ID" });
-//     }
-
-//     if (typeof paidAmount !== "number" || isNaN(paidAmount) || paidAmount < 0) {
-//       await session.abortTransaction();
-//       return res.status(400).json({ message: "Invalid paid amount" });
-//     }
-
-//     const oldPayment = await Payment.findById(id).session(session);
-//     if (!oldPayment) {
-//       await session.abortTransaction();
-//       return res.status(404).json({ message: "Payment not found" });
-//     }
-
-//     const newPaidAmount = oldPayment.paidAmount + paidAmount;
-//     const remainingAmount = Math.max(0, oldPayment.dueAmount - newPaidAmount);
-//     const status = remainingAmount <= 0 ? "settled" : "partially_settled";
-
-//     const updatedPayment = await Payment.findByIdAndUpdate(
-//       id,
-//       {
-//         paidAmount: newPaidAmount,
-//         remainingAmount: remainingAmount,
-//         status: status,
-//       },
-//       { new: true, runValidators: true, session: session }
-//     );
-
-//     if (!updatedPayment) {
-//       await session.abortTransaction();
-//       return res.status(404).json({ message: "Payment not found" });
-//     }
-
-//     const tempPayment = {
-//       ...updatedPayment.toObject(),
-//       paidAmount: paidAmount,
-//     };
-
-//     await updateStatistics(tempPayment);
-
-//     await session.commitTransaction();
-//     res.json(updatedPayment);
-//   } catch (error) {
-//     await session.abortTransaction();
-//     console.error("Error in updatePayment:", error);
-//     res.status(400).json({
-//       message: "An error occurred while updating the payment",
-//       error: error.message,
-//     });
-//   } finally {
-//     session.endSession();
-//   }
-// };
-
 exports.updatePayment = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -640,7 +753,13 @@ exports.deletePayment = async (req, res) => {
         customer.businesses[businessIndex].totalPaymentAmount -
           payment.paidAmount
       );
-      customer.businesses[businessIndex].totalDueAmount += payment.paidAmount;
+      // Instead of adding to totalDueAmount, we recalculate it
+      customer.businesses[businessIndex].totalDueAmount = Math.max(
+        0,
+        customer.businesses[businessIndex].totalDueAmount +
+          payment.dueAmount -
+          payment.paidAmount
+      );
       customer.businesses[businessIndex].paymentHistory = customer.businesses[
         businessIndex
       ].paymentHistory.filter(
@@ -658,7 +777,10 @@ exports.deletePayment = async (req, res) => {
       business.totalIncome - payment.paidAmount
     );
 
-    business.totalDue += payment.dueAmount - payment.paidAmount;
+    business.totalDue = Math.max(
+      0,
+      business.totalDue + payment.dueAmount - payment.paidAmount
+    );
 
     await customer.save({ session });
     await business.save({ session });
@@ -778,68 +900,6 @@ exports.deleteMultiplePayments = async (req, res) => {
     session.endSession();
   }
 };
-
-// async function updateStatistics(payment, isDelete = false) {
-//   try {
-//     const customer = await Customer.findById(payment.customerId);
-//     const business = await Business.findById(payment.businessId);
-
-//     if (!customer || !business) {
-//       throw new Error("Customer or Business not found");
-//     }
-
-//     const businessIndex = customer.businesses.findIndex(
-//       (b) => b.businessId.toString() === payment.businessId.toString()
-//     );
-
-//     if (businessIndex > -1) {
-//       if (isDelete) {
-//         customer.businesses[businessIndex].totalPaymentAmount =
-//           Number(customer.businesses[businessIndex].totalPaymentAmount) -
-//           Number(payment.paidAmount);
-//         customer.businesses[businessIndex].totalDueAmount =
-//           Number(customer.businesses[businessIndex].totalDueAmount) +
-//           Number(payment.paidAmount);
-//         customer.businesses[businessIndex].paymentHistory = customer.businesses[
-//           businessIndex
-//         ].paymentHistory.filter(
-//           (p) => p._id.toString() !== payment._id.toString()
-//         );
-//       } else {
-//         customer.businesses[businessIndex].totalPaymentAmount =
-//           Number(customer.businesses[businessIndex].totalPaymentAmount) +
-//           Number(payment.paidAmount);
-//         customer.businesses[businessIndex].totalDueAmount = Number(
-//           payment.remainingAmount
-//         );
-//         customer.businesses[businessIndex].paymentHistory.push({
-//           amount: payment.paidAmount,
-//           date: new Date(),
-//           month: payment.dueDate.getMonth() + 1,
-//           year: payment.dueDate.getFullYear(),
-//         });
-//       }
-//     }
-
-//     // Ensure numerical addition/subtraction for mainTotalPayment
-//     customer.mainTotalPayment = isDelete
-//       ? Number(customer.mainTotalPayment) - Number(payment.paidAmount)
-//       : Number(customer.mainTotalPayment) + Number(payment.paidAmount);
-//     await customer.save();
-
-//     // Ensure numerical addition/subtraction for totalIncome and totalDue
-//     business.totalIncome = isDelete
-//       ? Number(business.totalIncome) - Number(payment.paidAmount)
-//       : Number(business.totalIncome) + Number(payment.paidAmount);
-//     business.totalDue = isDelete
-//       ? Number(business.totalDue) + Number(payment.paidAmount)
-//       : Number(payment.remainingAmount);
-//     await business.save();
-//   } catch (error) {
-//     console.error("Error updating statistics:", error);
-//     throw error;
-//   }
-// }
 
 async function updateStatistics(payment, isDelete = false) {
   try {

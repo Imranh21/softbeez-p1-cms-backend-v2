@@ -211,6 +211,7 @@ exports.getDuePayments = async (req, res) => {
 //   }
 // };
 
+// previous code
 exports.getAllCustomers = async (req, res) => {
   try {
     const {
@@ -278,6 +279,105 @@ exports.getAllCustomers = async (req, res) => {
         },
       };
     });
+
+    const totalPages = Math.ceil(totalCount / pageSize);
+
+    res.json({
+      customers: formattedCustomers,
+      currentPage: pageNumber,
+      totalPages: totalPages,
+      totalCount: totalCount,
+    });
+  } catch (error) {
+    console.error("Error in getAllCustomers:", error);
+    res.status(500).json({
+      message: "An error occurred while fetching customers",
+      error: error.message,
+    });
+  }
+};
+
+// new code
+exports.getAllCustomers = async (req, res) => {
+  try {
+    const {
+      businessId,
+      page = 1,
+      limit = 10,
+      sortField = "name",
+      sortOrder = "asc",
+    } = req.query;
+
+    if (!businessId) {
+      return res
+        .status(400)
+        .json({ message: "BusinessId is required as a query parameter" });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(businessId)) {
+      return res.status(400).json({ message: "Invalid business ID" });
+    }
+
+    const pageNumber = parseInt(page);
+    const pageSize = parseInt(limit);
+
+    if (
+      isNaN(pageNumber) ||
+      isNaN(pageSize) ||
+      pageNumber < 1 ||
+      pageSize < 1
+    ) {
+      return res.status(400).json({ message: "Invalid pagination parameters" });
+    }
+
+    const skip = (pageNumber - 1) * pageSize;
+
+    const sortOptions = {};
+    sortOptions[sortField] = sortOrder === "desc" ? -1 : 1;
+
+    const totalCount = await Customer.countDocuments({
+      "businesses.businessId": new mongoose.Types.ObjectId(businessId),
+    });
+
+    const customers = await Customer.find({
+      "businesses.businessId": new mongoose.Types.ObjectId(businessId),
+    })
+      .sort(sortOptions)
+      .skip(skip)
+      .limit(pageSize);
+
+    const formattedCustomers = await Promise.all(
+      customers.map(async (customer) => {
+        const businessInfo = customer.businesses.find(
+          (b) => b.businessId.toString() === businessId
+        );
+
+        // Calculate the correct totalDueAmount
+        const latestPayment = await Payment.findOne({
+          customerId: customer._id,
+          businessId: new mongoose.Types.ObjectId(businessId),
+        }).sort({ dueDate: -1 });
+
+        const totalDueAmount = latestPayment
+          ? latestPayment.remainingAmount
+          : businessInfo.totalDueAmount;
+
+        return {
+          _id: customer._id,
+          name: customer.name,
+          phone: customer.phone,
+          uuid: customer.uuid,
+          businessInfo: {
+            businessId: businessInfo.businessId,
+            monthlyFee: businessInfo.monthlyFee,
+            payableAmount: businessInfo.payableAmount,
+            totalPaymentAmount: businessInfo.totalPaymentAmount,
+            totalDueAmount: totalDueAmount,
+            paymentHistory: businessInfo.paymentHistory,
+          },
+        };
+      })
+    );
 
     const totalPages = Math.ceil(totalCount / pageSize);
 
