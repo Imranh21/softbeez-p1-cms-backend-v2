@@ -8,6 +8,7 @@ const businessRoutes = require("./routes/businessRoutes");
 const customerRoutes = require("./routes/customerRoutes");
 const paymentRoutes = require("./routes/paymentRoutes");
 const businessOverviewRoutes = require("./routes/businessOverviewRoutes");
+const { spinServer } = require("./controllers/spinServer");
 
 const app = express();
 
@@ -25,6 +26,7 @@ app.use(express.json());
 
 // Routes
 app.use("/api/auth", authRoutes);
+app.use("/api/ping", spinServer);
 app.use("/api/businesses", businessRoutes);
 app.use("/api/customers", customerRoutes);
 app.use("/api/payments", paymentRoutes);
